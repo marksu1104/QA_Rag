@@ -9,16 +9,20 @@ import pdfplumber
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core import VectorStoreIndex, Document, StorageContext
+from llama_index.core.callbacks import CallbackManager
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.storage.docstore import SimpleDocumentStore
 
 
 class VectorDatabase:
-    def __init__(self, source_path="./reference", db_path="./chroma", docstore_path="./docstore"):
+    def __init__(self, source_path="./reference", db_path="./database/chroma", docstore_path="./database/docstore", pkl_path="./database"):
+        
+        print("< VectorDatabase initialized > ")
         # Initialize paths
         self.source_path = source_path
         self.db_path = db_path
         self.docstore_path = docstore_path
+        self.pkl_path = pkl_path
         os.makedirs(self.docstore_path, exist_ok=True)
         
         # Setup embedding model
@@ -32,11 +36,11 @@ class VectorDatabase:
         # Load different types of data
         self.corpus_dict_insurance = self.load_data(
             os.path.join(self.source_path, 'insurance'),
-            os.path.join(self.source_path, 'insurance.pkl')
+            os.path.join(self.pkl_path, 'insurance.pkl')
         )
         self.corpus_dict_finance = self.load_data(
             os.path.join(self.source_path, 'finance'),
-            os.path.join(self.source_path, 'finance.pkl')
+            os.path.join(self.pkl_path, 'finance.pkl')
         )
         
         # Load and process FAQ data
@@ -45,18 +49,27 @@ class VectorDatabase:
             key_to_source_dict = json.load(f_s)
             key_to_source_dict = {int(key): value for key, value in key_to_source_dict.items()}
             self.corpus_dict_faq = {key: str(value) for key, value in key_to_source_dict.items()}
+            
         
-        print("\n< VectorDatabase initialized > ")
-
     def initialize_process(self, chunk_size=256, chunk_overlap=200):
         print("  - loading data into ChromaDB ")
         
+        # clear existing database
+        if os.path.exists(self.db_path):
+            for root, dirs, files in os.walk(self.db_path, topdown=False):
+                for name in files:
+                    if name != "chroma.sqlite3":
+                        os.remove(os.path.join(root, name))
+                for name in dirs:
+                    os.rmdir(os.path.join(root, name))
+            
         # Check and update collections
         existing_collections = self.chroma_persist_client.list_collections()
         existing_collections_name = [collection.name for collection in existing_collections]
         
-        # Process each category
+        # Process each category       
         for category in ['faq', 'insurance', 'finance']:
+            print(f"     - loading [{category}] ...")
             if category in existing_collections_name:
                 self.delete_database(category)
             self.insert_database(
@@ -65,7 +78,7 @@ class VectorDatabase:
                 chunk_size,
                 chunk_overlap
             )
-            print(f"     - loading {category} done.")
+            
 
     def load_data(self, category_path, corpus_dict_file):
         # Load existing corpus if available
@@ -79,6 +92,7 @@ class VectorDatabase:
 
         # Process new PDF files
         if new_files:
+            print(f"  - loading PDF ...")
             for file in tqdm(new_files, desc="Loading new files"):
                 file_id = int(file.replace('.pdf', ''))
                 corpus_dict[file_id] = self.read_pdf(os.path.join(category_path, file))
@@ -106,7 +120,7 @@ class VectorDatabase:
 
         # Setup ChromaDB collection and vector store
         chroma_collection = self.chroma_persist_client.get_or_create_collection(category)
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        vector_store = ChromaVectorStore(chroma_collection=chroma_collection, persist_dir=os.path.join(self.db_path, category))
 
         # Process documents into nodes
         splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
@@ -116,12 +130,13 @@ class VectorDatabase:
         docstore = SimpleDocumentStore()
         docstore.add_documents(nodes)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
+        
         # Create and save vector index
         vector_index = VectorStoreIndex(
             nodes=nodes,
             embed_model=self.my_embedding,
             storage_context=storage_context,
+            show_progress=True
         )
 
         # Persist document store
@@ -153,7 +168,7 @@ class VectorDatabase:
 
     def delete_database(self, category):
         self.chroma_persist_client.delete_collection(category)
-        print(f"     - collection {category} deleted.")
+        print(f"        ... collection [{category}] deleted.")
 
     def get_vector_index(self, category):
         return self.load_database(category)

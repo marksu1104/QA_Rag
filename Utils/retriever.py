@@ -18,6 +18,8 @@ class Retriever:
         """
         Initialize the Retriever with paths for sources, questions, and output.
         """
+        print("< Retriever initialized > ")
+        
         self.source_path = source_path
         self.question_path = question_path
         self.output_path = output_path
@@ -28,9 +30,7 @@ class Retriever:
         # Initialize the embedding model
         self.my_embedding = HuggingFaceEmbedding(
             model_name="TencentBAC/Conan-embedding-v1"  # Options: "TencentBAC/Conan-embedding-v1", "sensenova/piccolo-base-zh"
-        )
-
-        print("\n< Retriever initialized > ")
+        )    
 
     def vector_retrieve(self, qs, category, source_list, top_k=1):
         """

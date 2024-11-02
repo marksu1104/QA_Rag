@@ -57,7 +57,7 @@ class Evaluation:
     def output_evaluation(self):
         # Calculate overall accuracy
         accuracy = self.evaluate_retrieval()
-        print("\n< Evaluation by Ground Truths > ")
+        print("< Evaluation by Ground Truths > ")
         print(f"  - Retrieval accuracy: {accuracy * 100:.2f}%")
 
         # Calculate accuracy by category
