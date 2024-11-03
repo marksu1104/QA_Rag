@@ -135,8 +135,7 @@ class VectorDatabase:
         vector_index = VectorStoreIndex(
             nodes=nodes,
             embed_model=self.my_embedding,
-            storage_context=storage_context,
-            show_progress=True
+            storage_context=storage_context
         )
 
         # Persist document store
