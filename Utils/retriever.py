@@ -80,6 +80,7 @@ class Retriever:
 
         # Sort file IDs by their scores in descending order and get the highest score ID
         sorted_file_scores = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
+        print(f'vector_score :', sorted_file_scores)
         # max_score_id = sorted_file_scores[0][0]
         id = [file_id for file_id, _ in sorted_file_scores[:top_k]]
 
@@ -121,12 +122,13 @@ class Retriever:
 
         # Sort file IDs by their scores in descending order and get the highest score ID
         sorted_file_scores = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
+        print(f'BM25_score :', sorted_file_scores)
         # max_score_id = sorted_file_scores[0][0]
         id = [file_id for file_id, _ in sorted_file_scores[:top_k]]
         return id, scores
 
 
-    def bm25_file_retrieve(self, qs, category, source_list, top_k=1):
+    def original_retrieve(self, qs, category, source_list, top_k=1):
         """
         Retrieve documents using BM25 algorithm.
         """
@@ -172,21 +174,41 @@ class Retriever:
 
         return [r[0] for r in sorted_results[:top_k]]
     
-    def bm25_then_vector_retrieve(self, qs, category, source_list):
-        """
-        First use BM25 to filter candidates, then apply vector retrieval.
-        """
-        # First get top candidates using BM25
-        top_k = min(4, len(source_list))
-        bm25_retrieved, bm25_scores = self.bm25_retrieve(qs, category, source_list, top_k=top_k)
-        
-        # Filter source list to only include top BM25 candidates
-        filtered_source_list = [int(b) for b in bm25_retrieved]
-        
-        # Then do vector retrieval on filtered candidates
-        vector_retrieved, vector_scores = self.vector_retrieve(qs, category, filtered_source_list)
-        
-        return vector_retrieved, vector_scores
+    def weight_retrieve(self, qs, category, source_list, top_k=1, k=60, weight=0.8, combine_method='fussion'):
+
+        bm25_retrieved, bm25_scores = self.bm25_retrieve(qs, category, source_list, top_k=len(source_list))
+        vector_retrieved, vector_scores = self.vector_retrieve(qs, category, source_list, top_k=100000)
+
+        # Normalize scores
+        def normalize_scores(scores):
+            min_score = min(scores)
+            max_score = max(scores)
+            if max_score == min_score:
+                return [1.0] * len(scores)
+            return [(s - min_score) / (max_score - min_score) for s in scores]
+
+        bm25_scores_norm = normalize_scores(bm25_scores)
+        vector_scores_norm = normalize_scores(vector_scores)
+
+        combined_scores = {}
+        for idx, (b_score, v_score) in enumerate(zip(bm25_scores_norm, vector_scores_norm)):
+            file_id = int(source_list[idx])
+            
+            if combine_method == 'weighted':
+                # Calculate weighted scores
+                combined_score = weight * v_score + (1 - weight) * b_score
+            else:  # 'rrf'
+                # Calculate RRF scores
+                combined_score = weight * (1 / (k + (1 - v_score))) + (1 - weight) * (1 / (k + (1 - b_score)))
+                
+            combined_scores[file_id] = combined_score
+
+        # Sort and return top_k results
+        sorted_results = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+        if not sorted_results:
+            return None
+
+        return [r[0] for r in sorted_results[:top_k]]
 
     def process_questions(self, method='Vector'):
         """
@@ -198,21 +220,22 @@ class Retriever:
 
 
         for q_dict in qs_ref['questions']:
+            print(f"Processing question {q_dict['qid']} ...")
             category = q_dict['category']
             query = q_dict['query']
             source = q_dict['source']
             qid = q_dict['qid']
                      
-            if method == 'BM25f':
-                retrieved, score = self.bm25_file_retrieve(query, category, source)
+            if method == 'original':
+                retrieved, score = self.original_retrieve(query, category, source)
             elif method == 'Vector':
                 retrieved, score = self.vector_retrieve(query, category, source)
             elif method == 'BM25_Vector':
                 retrieved = self.bm25_vector_retrieve(query, category, source)
             elif method == 'BM25':
                 retrieved, score = self.bm25_retrieve(query, category, source)    
-            elif method == 'Vector_filter_BM25':
-                retrieved, score = self.bm25_then_vector_retrieve(query, category, source)    
+            elif method == 'weight':
+                retrieved = self.weight_retrieve(query, category, source)        
             else:
                 raise ValueError("Invalid retrieval method")
 

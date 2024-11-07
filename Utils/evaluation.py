@@ -11,6 +11,7 @@ class Evaluation:
 
         self.output_data = self.load_json(self.output_file)
         self.ground_truth_data = self.load_json(self.ground_truth_file)
+        self.question_data = self.load_json(question_file)
 
 
     @staticmethod
@@ -64,6 +65,46 @@ class Evaluation:
         category_accuracy = self.evaluate_retrieval_by_category()
         for category, accuracy in category_accuracy.items():
             print(f"     - Category: [{category}], Accuracy: {accuracy:.2f}%")
+
+    def get_incorrect_answers(self):
+        output_dict = {item['qid']: item for item in self.output_data['answers']}
+        ground_truth_dict = {item['qid']: item for item in self.ground_truth_data['ground_truths']}
+        question_dict = {item['qid']: item for item in self.question_data['questions']}
+
+        incorrect_answers = []
+
+        for qid, ground_truth_item in ground_truth_dict.items():
+            if qid not in output_dict or output_dict[qid]['retrieve'] != ground_truth_item['retrieve']:
+                incorrect_answers.append({
+                    'qid': qid,
+                    'query': question_dict[qid]['query'],
+                    'source': question_dict[qid]['source'],
+                    'expected': ground_truth_item['retrieve'],
+                    'actual': output_dict[qid]['retrieve'] if qid in output_dict else None,
+                    'category': ground_truth_item['category']
+                })
+
+        return incorrect_answers
+
+    def output_incorrect_answers(self, output_path='incorrect_answers.json'):
+        incorrect_answers = self.get_incorrect_answers()
+        # with open(output_path, 'w', encoding='utf-8') as file:
+        #     json.dump(incorrect_answers, file, ensure_ascii=False, indent=4)
+        # print(f"Incorrect answers saved to {output_path}")
+
+        # Print incorrect answers by category
+        incorrect_by_category = {}
+        for answer in incorrect_answers:
+            category = answer['category']
+            if category not in incorrect_by_category:
+                incorrect_by_category[category] = []
+            incorrect_by_category[category].append(answer)
+
+        for category, answers in incorrect_by_category.items():
+            print(f"\nCategory: {category}")
+            for answer in answers:
+                print(f"  - QID: {answer['qid']}, Expected: {answer['expected']}, Actual: {answer['actual']}, Source: {answer['source']}, Query: {answer['query']}")
+                
 
 
 if __name__ == "__main__":

@@ -8,10 +8,23 @@ import pdfplumber
 
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core import VectorStoreIndex, Document, StorageContext
+from llama_index.core import VectorStoreIndex, Document, StorageContext, get_response_synthesizer
+from llama_index.core import DocumentSummaryIndex
 from llama_index.core.callbacks import CallbackManager
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core.storage.docstore import SimpleDocumentStore
+from llama_index.core.indices.document_summary import DocumentSummaryIndexLLMRetriever
+
+from typing import Any, Callable, Dict, List, Optional, Union, cast
+from transformers import BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
+import torch
+from llama_index.core.llms.callbacks import llm_completion_callback
+from llama_index.core.llms import (
+    CustomLLM,
+    CompletionResponse,
+    CompletionResponseGen,
+    LLMMetadata,
+)
 
 
 class VectorDatabase:
@@ -29,6 +42,10 @@ class VectorDatabase:
         self.my_embedding = HuggingFaceEmbedding(
             model_name="TencentBAC/Conan-embedding-v1"
         )
+        
+        # self.model = HuggingFaceEmbedding(
+        #     model_name="taide/Llama3-TAIDE-LX-8B-Chat-Alpha1"
+        # )
         
         # Initialize ChromaDB client
         self.chroma_persist_client = chromadb.PersistentClient(db_path)
@@ -108,7 +125,7 @@ class VectorDatabase:
             pages = pdf.pages[page_infos[0]:page_infos[1]] if page_infos else pdf.pages
             return ''.join(page.extract_text() for page in pages if page.extract_text())
 
-    def insert_database(self, corpus_dict, category, chunk_size=256, chunk_overlap=100):
+    def insert_database(self, corpus_dict, category, chunk_size=256, chunk_overlap=200):
         # Prepare documents
         documents = [
             Document(
@@ -164,6 +181,40 @@ class VectorDatabase:
             storage_context=storage_context,
             embed_model=self.my_embedding
         )
+        
+    def summary_index(self, corpus_dict=123, category='finance', chunk_size=256, chunk_overlap=200):
+        corpus_dict=self.corpus_dict_finance
+        corpus_dict = {k: v for k, v in corpus_dict.items() if int(k) in [351, 900, 1021]}
+        # Prepare documents
+        documents = [
+            Document(
+                text=text,
+                id_=f"doc_id_{id}",
+                metadata={"category": category, "pid": id}
+            ) for id, text in corpus_dict.items()
+        ]
+
+        # Process documents into nodes
+        splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        
+        # response_synthesizer = get_response_synthesizer(
+        #     llm=self.model ,response_mode="tree_summarize", use_async=True
+        # )
+        doc_summary_index = DocumentSummaryIndex.from_documents(
+            documents=documents,
+            # llm=OurLLM(),
+            transformations=[splitter],
+            # response_synthesizer=response_synthesizer,
+            show_progress=True,
+            embed_model=self.my_embedding
+        )
+        
+
+        # Setup storage context and document store
+        doc_summary_index.storage_context.persist(self.docstore_path, f'{category}_summary.json')
+
+        return doc_summary_index
+        
 
     def delete_database(self, category):
         self.chroma_persist_client.delete_collection(category)
@@ -176,6 +227,42 @@ class VectorDatabase:
         return getattr(self, f'corpus_dict_{category}')
 
 
+# # quantization_config = BitsAndBytesConfig(
+# #     load_in_4bit=True,
+# #     bnb_4bit_compute_dtype=torch.float16,
+# #     bnb_4bit_quant_type="nf4",
+# #     bnb_4bit_use_double_quant=True,
+# # )
+# model_name = "Llama3-TAIDE-LX-8B-Chat-Alpha1"
+# tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+# model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True, low_cpu_mem_usage=True, device_map="cuda", torch_dtype=torch.bfloat16).eval()
+# #自定义本地模型
+# class OurLLM(CustomLLM):
+#     context_window: int = 4096
+#     num_output: int = 1024
+#     model_name_: str = "custom"
+ 
+#     @property
+#     def metadata(self) -> LLMMetadata:
+#         """Get LLM metadata."""
+#         return LLMMetadata(
+#             context_window=self.context_window,
+#             num_output=self.num_output,
+#             model_name_=self.model_name,
+#         )
+ 
+#     @llm_completion_callback()
+#     def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
+#         text, history = model.chat(tokenizer, prompt, history=[], temperature=0.1)
+#         return CompletionResponse(text=text)
+ 
+#     @llm_completion_callback()
+#     def stream_complete(
+#             self, prompt: str, **kwargs: Any
+#     ) -> CompletionResponseGen:
+#         raise NotImplementedError()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process some paths and files.')
     parser.add_argument('--question_path', type=str, required=True, help='Path to read questions')
@@ -186,3 +273,6 @@ if __name__ == "__main__":
     
     db = VectorDatabase(source_path=args.source_path)
     VectorDatabase.initialize_process(source_path=args.source_path)
+
+
+

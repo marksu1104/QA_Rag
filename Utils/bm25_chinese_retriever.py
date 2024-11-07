@@ -60,7 +60,7 @@ class ChineseBM25Retriever(BM25Retriever):
         
         self.bm25 = bm25s.BM25()
         self.bm25.corpus = corpus
-        self.bm25.index(corpus_tokens, show_progress=True)
+        self.bm25.index(corpus_tokens, show_progress=False)
     
     
     @classmethod
@@ -118,7 +118,7 @@ class ChineseBM25Retriever(BM25Retriever):
         self,
         texts,
         return_ids: bool = True,
-        show_progress: bool = True,
+        show_progress: bool = False,
         leave: bool = False,
     ) -> Union[List[List[str]], Tokenized]:
         
@@ -134,14 +134,7 @@ class ChineseBM25Retriever(BM25Retriever):
             return Tokenized(ids=corpus_ids, vocab=vocab_dict)
         else:
             reverse_dict = unique_tokens
-            for i, token_ids in enumerate(
-                tqdm(
-                    corpus_ids,
-                    desc="Reconstructing token strings",
-                    leave=leave,
-                    disable=not show_progress,
-                )
-            ):
+            for i, token_ids in corpus_ids:
                 corpus_ids[i] = [reverse_dict[token_id] for token_id in token_ids]
 
             return corpus_ids
@@ -150,9 +143,7 @@ class ChineseBM25Retriever(BM25Retriever):
         corpus_ids = []
         token_to_index = {}
 
-        for text in tqdm(
-            texts, desc="Split strings", leave=leave, disable=not show_progress
-        ):
+        for text in texts:
             splitted = jieba.lcut(text)
             doc_ids = []
 
