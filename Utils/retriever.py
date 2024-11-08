@@ -16,6 +16,9 @@ from llama_index.retrievers.bm25 import BM25Retriever
 from Utils.vector_database import VectorDatabase
 from Utils.bm25_chinese_retriever import ChineseBM25Retriever
 
+from concurrent.futures import ThreadPoolExecutor
+import logging
+
 
 class Retriever:
     def __init__(self, source_path='./reference', question_path='./dataset/preliminary/questions_example.json', output_path='output.json'):
@@ -80,7 +83,6 @@ class Retriever:
 
         # Sort file IDs by their scores in descending order and get the highest score ID
         sorted_file_scores = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
-        print(f'vector_score :', sorted_file_scores)
         # max_score_id = sorted_file_scores[0][0]
         id = [file_id for file_id, _ in sorted_file_scores[:top_k]]
 
@@ -101,6 +103,7 @@ class Retriever:
         retriever = ChineseBM25Retriever.from_defaults(
             index=vector_index,
             similarity_top_k=num_vector_index,  # Retrieve all possible results
+            source_list=source_list
         )
 
         # Retrieve results
@@ -122,7 +125,6 @@ class Retriever:
 
         # Sort file IDs by their scores in descending order and get the highest score ID
         sorted_file_scores = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
-        print(f'BM25_score :', sorted_file_scores)
         # max_score_id = sorted_file_scores[0][0]
         id = [file_id for file_id, _ in sorted_file_scores[:top_k]]
         return id, scores
@@ -146,8 +148,7 @@ class Retriever:
         """
         Combine BM25 and vector retrieval scores using Reciprocal Rank Fusion (RRF).
         """
-        bm25_retrieved, bm25_scores = self.bm25_retrieve(qs, category, source_list, top_k=len(source_list))
-        vector_retrieved, vector_scores = self.vector_retrieve(qs, category, source_list, top_k=100000)
+        bm25_retrieved, bm25_scores ,vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
 
         # Normalize scores
         def normalize_scores(scores):
@@ -175,9 +176,8 @@ class Retriever:
         return [r[0] for r in sorted_results[:top_k]]
     
     def weight_retrieve(self, qs, category, source_list, top_k=1, k=60, weight=0.8, combine_method='fussion'):
-
-        bm25_retrieved, bm25_scores = self.bm25_retrieve(qs, category, source_list, top_k=len(source_list))
-        vector_retrieved, vector_scores = self.vector_retrieve(qs, category, source_list, top_k=100000)
+        
+        bm25_retrieved, bm25_scores ,vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
 
         # Normalize scores
         def normalize_scores(scores):
@@ -209,8 +209,40 @@ class Retriever:
             return None
 
         return [r[0] for r in sorted_results[:top_k]]
+    
+    def bm25_vector_retrieve_parallel(self, qs, category, source_list):
+        """do bm25 and vector retrieval in parallel"""
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # two futures for bm25 and vector retrieval
+            future_bm25 = executor.submit(
+                self.bm25_retrieve,
+                qs, 
+                category, 
+                source_list,
+                top_k=len(source_list)
+            )
+            
+            future_vector = executor.submit(
+                self.vector_retrieve,
+                qs,
+                category,
+                source_list,
+                top_k=len(source_list)
+            )
+            
+            try:
+                # 等待並獲取結果
+                bm25_retrieved, bm25_scores = future_bm25.result()
+                vector_retrieved, vector_scores = future_vector.result()
+                
+                return (bm25_retrieved, bm25_scores, 
+                        vector_retrieved, vector_scores)
+                        
+            except Exception as e:
+                logging.error(f"Error when retrival parallel: {str(e)}")
+                return [], [], [], []
 
-    def process_questions(self, method='Vector'):
+    def process_questions(self, method='Vector', combine_method='fussion', k=60, weight=0.8):
         """
         Process questions and retrieve answers using the specified method.
         """
@@ -220,7 +252,6 @@ class Retriever:
 
 
         for q_dict in qs_ref['questions']:
-            print(f"Processing question {q_dict['qid']} ...")
             category = q_dict['category']
             query = q_dict['query']
             source = q_dict['source']
@@ -235,7 +266,7 @@ class Retriever:
             elif method == 'BM25':
                 retrieved, score = self.bm25_retrieve(query, category, source)    
             elif method == 'weight':
-                retrieved = self.weight_retrieve(query, category, source)        
+                retrieved = self.weight_retrieve(query, category, source, k=k, weight=weight, combine_method=combine_method)        
             else:
                 raise ValueError("Invalid retrieval method")
 

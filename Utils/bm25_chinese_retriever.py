@@ -12,6 +12,7 @@ from llama_index.core.vector_stores.utils import (
 )
 import bm25s
 import jieba
+from ckip_transformers.nlp import CkipWordSegmenter
 from llama_index.retrievers.bm25 import BM25Retriever
 from bm25s.tokenization import Tokenized
 from tqdm.auto import tqdm
@@ -41,6 +42,7 @@ class ChineseBM25Retriever(BM25Retriever):
             objects: Optional[List[IndexNode]] = None,
             object_map: Optional[dict] = None,
             verbose: bool = False,
+            source_list: Optional[List] = None,
     ) -> None:
 
         super().__init__(
@@ -51,12 +53,9 @@ class ChineseBM25Retriever(BM25Retriever):
             object_map=object_map,
             verbose=verbose,
         )
-        
-        
+        self.ws_driver = CkipWordSegmenter(model="bert-base", device=0)
         text, corpus = self._prepare_text_and_corpus(nodes)
-        text_hash = hashlib.md5("".join(text).encode('utf-8')).hexdigest()
-        cache_file = f"./database/bm25_cache_{text_hash}.pkl"
-        corpus_tokens = self.get_corpus_tokens(text, cache_file)
+        corpus_tokens = self._tokenize_fun(text)
         
         self.bm25 = bm25s.BM25()
         self.bm25.corpus = corpus
@@ -71,7 +70,7 @@ class ChineseBM25Retriever(BM25Retriever):
         docstore: Optional[BaseDocumentStore] = None,
         similarity_top_k: int = DEFAULT_SIMILARITY_TOP_K,
         verbose: bool = False,
-        tokenizer: Optional[Callable[[str], List[str]]] = None,
+        source_list: Optional[List] = None,
     ) -> "BM25Retriever":
 
         if not any([index, nodes, docstore]):
@@ -82,13 +81,17 @@ class ChineseBM25Retriever(BM25Retriever):
 
         if docstore is not None:
             nodes = cast(List[BaseNode], list(docstore.docs.values()))
+            
+        if source_list is not None:
+            nodes = [node for node in nodes if node.metadata['pid'] in source_list]
 
         assert nodes is not None, "Please pass exactly one of index, nodes, or docstore."
 
         return cls(
             nodes=nodes,
-            similarity_top_k=similarity_top_k,
+            similarity_top_k=min(similarity_top_k, len(nodes)),
             verbose=verbose,
+            source_list=source_list,
         )
     
     def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
@@ -144,10 +147,15 @@ class ChineseBM25Retriever(BM25Retriever):
         token_to_index = {}
 
         for text in texts:
-            splitted = jieba.lcut(text)
             doc_ids = []
 
-            for token in splitted:
+            if len(text) == 0:
+                splitted = [[]]
+            else:
+                splitted = self.ws_driver.__call__([text], show_progress=False)
+            
+            
+            for token in splitted[0]:
                 if token not in token_to_index:
                     token_to_index[token] = len(token_to_index)
 
@@ -162,15 +170,3 @@ class ChineseBM25Retriever(BM25Retriever):
         text = [node.get_content() for node in nodes]
         corpus = [node_to_metadata_dict(node) for node in nodes]
         return text, corpus
-    
-    def get_corpus_tokens(self, text, path: str):
-        
-        if os.path.exists(path):
-            with open(path, 'rb') as f:
-                corpus_tokens = pickle.load(f)
-        else:
-            corpus_tokens = self._tokenize_fun(text)
-            with open(path, 'wb') as f:
-                pickle.dump(corpus_tokens, f)
-        
-        return corpus_tokens
