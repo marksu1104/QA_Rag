@@ -2,6 +2,7 @@ import json
 import time
 import argparse
 from typing import Any, Callable, Dict, List, Optional, cast
+from scipy import stats
 
 import jieba  # Used for Chinese text segmentation
 from rank_bm25 import BM25Okapi  # BM25 algorithm for document retrieval
@@ -144,22 +145,22 @@ class Retriever:
         res = [key for key, value in corpus_dict.items() if value in ans]
         return res, bm25_scores
 
+    def normalize_scores(self, scores: List[float]) -> List[float]:
+        """Normalize scores"""
+        min_score = min(scores)
+        max_score = max(scores)
+        if max_score == min_score:
+            return [1.0] * len(scores)
+        return [(s - min_score) / (max_score - min_score) for s in scores]
+        
     def bm25_vector_retrieve(self, qs, category, source_list, top_k=1, k=60):
         """
         Combine BM25 and vector retrieval scores using Reciprocal Rank Fusion (RRF).
         """
         bm25_retrieved, bm25_scores ,vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
 
-        # Normalize scores
-        def normalize_scores(scores):
-            min_score = min(scores)
-            max_score = max(scores)
-            if max_score == min_score:
-                return [1.0] * len(scores)
-            return [(s - min_score) / (max_score - min_score) for s in scores]
-
-        bm25_scores_norm = normalize_scores(bm25_scores)
-        vector_scores_norm = normalize_scores(vector_scores)
+        bm25_scores_norm = self.normalize_scores(bm25_scores)
+        vector_scores_norm = self.normalize_scores(vector_scores)
 
         # Calculate RRF scores
         rrf_scores = {}
@@ -175,31 +176,19 @@ class Retriever:
 
         return [r[0] for r in sorted_results[:top_k]]
     
-    def weight_retrieve(self, qs, category, source_list, top_k=1, k=60, weight=0.8, combine_method='fussion'):
+    def weight_rrf_retrieve(self, qs, category, source_list, top_k=1, k=60, weight=0.8):
         
         bm25_retrieved, bm25_scores ,vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
 
-        # Normalize scores
-        def normalize_scores(scores):
-            min_score = min(scores)
-            max_score = max(scores)
-            if max_score == min_score:
-                return [1.0] * len(scores)
-            return [(s - min_score) / (max_score - min_score) for s in scores]
-
-        bm25_scores_norm = normalize_scores(bm25_scores)
-        vector_scores_norm = normalize_scores(vector_scores)
+        bm25_scores_norm = self.normalize_scores(bm25_scores)
+        vector_scores_norm = self.normalize_scores(vector_scores)
 
         combined_scores = {}
         for idx, (b_score, v_score) in enumerate(zip(bm25_scores_norm, vector_scores_norm)):
             file_id = int(source_list[idx])
-            
-            if combine_method == 'weighted':
-                # Calculate weighted scores
-                combined_score = weight * v_score + (1 - weight) * b_score
-            else:  # 'rrf'
-                # Calculate RRF scores
-                combined_score = weight * (1 / (k + (1 - v_score))) + (1 - weight) * (1 / (k + (1 - b_score)))
+            # 'rrf'
+            # Calculate RRF scores
+            combined_score = weight * (1 / (k + (1 - v_score))) + (1 - weight) * (1 / (k + (1 - b_score)))
                 
             combined_scores[file_id] = combined_score
 
@@ -209,6 +198,54 @@ class Retriever:
             return None
 
         return [r[0] for r in sorted_results[:top_k]]
+
+    def relative_score_fusion(self, qs: str, category: str, source_list: List[str], 
+                            top_k: int = 1, alpha: float = 0.5) -> Optional[List[int]]:
+        """
+        Relative Score Fusion
+
+        """
+        bm25_retrieved, bm25_scores, vector_retrieved, vector_scores = \
+            self.bm25_vector_retrieve_parallel(qs, category, source_list)
+
+        # Normalize scores
+        bm25_norm = self.normalize_scores(bm25_scores)
+        vector_norm = self.normalize_scores(vector_scores)
+
+        # relative score fusion
+        rsf_scores = {}
+        for idx, (b_score, v_score) in enumerate(zip(bm25_norm, vector_norm)):
+            file_id = int(source_list[idx])
+            rsf_score = alpha * v_score + (1 - alpha) * b_score
+            rsf_scores[file_id] = rsf_score
+
+        # sort and return top_k results
+        sorted_results = sorted(rsf_scores.items(), key=lambda x: x[1], reverse=True)
+        return [r[0] for r in sorted_results[:top_k]] if sorted_results else None
+
+    def distribution_score_fusion(self, qs: str, category: str, source_list: List[str], 
+                                top_k: int = 1) -> Optional[List[int]]:
+        """
+        Distribution-Based Score Fusion
+        """
+        bm25_retrieved, bm25_scores, vector_retrieved, vector_scores = \
+            self.bm25_vector_retrieve_parallel(qs, category, source_list)
+
+        # Z-score normalization
+        bm25_z = stats.zscore(bm25_scores)
+        vector_z = stats.zscore(vector_scores)
+
+        # fusion
+        dbsf_scores = {}
+        for idx, (b_z, v_z) in enumerate(zip(bm25_z, vector_z)):
+            file_id = int(source_list[idx])
+            # max of two z-scores
+            dbsf_score = max(b_z, v_z)
+            dbsf_scores[file_id] = dbsf_score
+
+        # sort and return top_k results
+        sorted_results = sorted(dbsf_scores.items(), key=lambda x: x[1], reverse=True)
+        return [r[0] for r in sorted_results[:top_k]] if sorted_results else None
     
     def bm25_vector_retrieve_parallel(self, qs, category, source_list):
         """do bm25 and vector retrieval in parallel"""
@@ -261,12 +298,16 @@ class Retriever:
                 retrieved, score = self.original_retrieve(query, category, source)
             elif method == 'Vector':
                 retrieved, score = self.vector_retrieve(query, category, source)
-            elif method == 'BM25_Vector':
+            elif method == 'BM25_Vector_rrf':
                 retrieved = self.bm25_vector_retrieve(query, category, source)
             elif method == 'BM25':
                 retrieved, score = self.bm25_retrieve(query, category, source)    
-            elif method == 'weight':
-                retrieved = self.weight_retrieve(query, category, source, k=k, weight=weight, combine_method=combine_method)        
+            elif method == 'weight_rrf':
+                retrieved = self.weight_rrf_retrieve(query, category, source, k=k, weight=weight)        
+            elif method == 'relative_fusion':
+                retrieved = self.relative_score_fusion(query, category, source, alpha=weight)  
+            elif method == 'distribution_fusion':
+                retrieved = self.distribution_score_fusion(query, category, source)      
             else:
                 raise ValueError("Invalid retrieval method")
 
