@@ -22,7 +22,10 @@ import logging
 
 
 class Retriever:
-    def __init__(self, source_path='./reference', question_path='./dataset/preliminary/questions_example.json', output_path='output.json'):
+    def __init__(self, 
+                 source_path='./reference', 
+                 question_path='./dataset/preliminary/questions_example.json', 
+                 output_path='output.json'):
         """
         Initialize the Retriever with paths for sources, questions, and output.
         """
@@ -39,11 +42,14 @@ class Retriever:
             model_name="TencentBAC/Conan-embedding-v1"  # Options: "TencentBAC/Conan-embedding-v1", "sensenova/piccolo-base-zh"
         )    
 
-    def vector_retrieve(self, qs, category, source_list, top_k=1):
+    def vector_retrieve(self, qs, category, source_list, top_k=1, text_type='chunk'):
         """
         Retrieve documents using vector similarity.
         """
-        vector_index = self.vector_db.get_vector_index(category)
+        if text_type == 'chunk':
+            vector_index = self.vector_db.get_vector_index(category)
+        else:
+            vector_index = self.vector_db.get_vector_all_index(category)
         
         # Get all documents from the vector index
         docstore = vector_index.docstore
@@ -89,11 +95,14 @@ class Retriever:
 
         return id, scores
     
-    def bm25_retrieve(self, qs, category, source_list, top_k=1):
+    def bm25_retrieve(self, qs, category, source_list, top_k=1, text_type='chunk'):
         """
         Retrieve documents using vector similarity.
         """
-        vector_index = self.vector_db.get_vector_index(category)
+        if text_type == 'chunk':
+            vector_index = self.vector_db.get_vector_index(category)
+        else:
+            vector_index = self.vector_db.get_vector_all_index(category)
         
         # Get all documents from the vector index
         docstore = vector_index.docstore
@@ -279,7 +288,7 @@ class Retriever:
                 logging.error(f"Error when retrival parallel: {str(e)}")
                 return [], [], [], []
 
-    def process_questions(self, method='Vector', combine_method='fussion', k=60, weight=0.8):
+    def process_questions(self, method='Vector', combine_method='fussion', k=60, weight=0.8, text_type='chunk'):
         """
         Process questions and retrieve answers using the specified method.
         """
@@ -297,11 +306,11 @@ class Retriever:
             if method == 'original':
                 retrieved, score = self.original_retrieve(query, category, source)
             elif method == 'Vector':
-                retrieved, score = self.vector_retrieve(query, category, source)
+                retrieved, score = self.vector_retrieve(query, category, source, text_type=text_type)
             elif method == 'BM25_Vector_rrf':
-                retrieved = self.bm25_vector_retrieve(query, category, source)
+                retrieved = self.bm25_vector_retrieve(query, category, source, k=k)
             elif method == 'BM25':
-                retrieved, score = self.bm25_retrieve(query, category, source)    
+                retrieved, score = self.bm25_retrieve(query, category, source, text_type=text_type)    
             elif method == 'weight_rrf':
                 retrieved = self.weight_rrf_retrieve(query, category, source, k=k, weight=weight)        
             elif method == 'relative_fusion':
