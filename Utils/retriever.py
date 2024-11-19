@@ -1,7 +1,7 @@
 import json
 import time
 import argparse
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Tuple, Dict, List, Optional, cast
 from scipy import stats
 
 import jieba  # Used for Chinese text segmentation
@@ -23,33 +23,38 @@ import logging
 
 class Retriever:
     def __init__(self, 
-                 source_path='./reference', 
-                 question_path='./dataset/preliminary/questions_example.json', 
-                 output_path='output.json'):
+                 source_path: str = './reference', 
+                 question_path: str = './dataset/preliminary/questions_example.json', 
+                 output_path: str = 'output.json'):
         """
         Initialize the Retriever with paths for sources, questions, and output.
         """
-        self.source_path = source_path
-        self.question_path = question_path
-        self.output_path = output_path
+        self._source_path = source_path
+        self._question_path = question_path
+        self._output_path = output_path
 
         # Initialize the vector database
-        self.vector_db = VectorDatabase(source_path)
+        self._vector_db = VectorDatabase(source_path)
         print("< Retriever initialized > ")
 
         # Initialize the embedding model
-        self.my_embedding = HuggingFaceEmbedding(
+        self._embedding_model = HuggingFaceEmbedding(
             model_name="TencentBAC/Conan-embedding-v1"  # Options: "TencentBAC/Conan-embedding-v1", "sensenova/piccolo-base-zh"
         )    
 
-    def vector_retrieve(self, qs, category, source_list, top_k=1, text_type='chunk'):
+    def vector_retrieve(self, 
+                        qs: str, 
+                        category: str, 
+                        source_list: List[str], 
+                        top_k: int = 1, 
+                        text_type: str = 'chunk') -> Tuple[List[int], List[float]]:
         """
         Retrieve documents using vector similarity.
         """
         if text_type == 'chunk':
-            vector_index = self.vector_db.get_vector_index(category)
+            vector_index = self._vector_db.get_vector_index(category)
         else:
-            vector_index = self.vector_db.get_vector_all_index(category)
+            vector_index = self._vector_db.get_vector_clean_index(category)
         
         # Get all documents from the vector index
         docstore = vector_index.docstore
@@ -84,25 +89,32 @@ class Retriever:
                     file_scores[file_id] = max(file_scores[file_id], score)
                 else:
                     file_scores[file_id] = score
+        # Add any missing source_list IDs with score 0
+        for file_id in source_list:
+            if int(file_id) not in file_scores:
+                file_scores[int(file_id)] = 0
 
         # Extract scores in the order of source_list
         scores = [file_scores[int(file_id)] for file_id in source_list]
 
         # Sort file IDs by their scores in descending order and get the highest score ID
         sorted_file_scores = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
-        # max_score_id = sorted_file_scores[0][0]
         id = [file_id for file_id, _ in sorted_file_scores[:top_k]]
-
         return id, scores
     
-    def bm25_retrieve(self, qs, category, source_list, top_k=1, text_type='chunk'):
+    def bm25_retrieve(self, 
+                      qs: str, 
+                      category: str, 
+                      source_list: List[str], 
+                      top_k: int = 1, 
+                      text_type: str = 'chunk') -> Tuple[List[int], List[float]]:
         """
-        Retrieve documents using vector similarity.
+        Retrieve documents using BM25 algorithm.
         """
         if text_type == 'chunk':
-            vector_index = self.vector_db.get_vector_index(category)
+            vector_index = self._vector_db.get_vector_index(category)
         else:
-            vector_index = self.vector_db.get_vector_all_index(category)
+            vector_index = self._vector_db.get_vector_clean_index(category)
         
         # Get all documents from the vector index
         docstore = vector_index.docstore
@@ -129,22 +141,28 @@ class Retriever:
                     file_scores[file_id] = max(file_scores[file_id], score)
                 else:
                     file_scores[file_id] = score
+        # Add any missing source_list IDs with score 0
+        for file_id in source_list:
+            if int(file_id) not in file_scores:
+                file_scores[int(file_id)] = 0
 
         # Extract scores in the order of source_list
         scores = [file_scores[int(file_id)] for file_id in source_list]
 
         # Sort file IDs by their scores in descending order and get the highest score ID
         sorted_file_scores = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
-        # max_score_id = sorted_file_scores[0][0]
         id = [file_id for file_id, _ in sorted_file_scores[:top_k]]
         return id, scores
 
-
-    def original_retrieve(self, qs, category, source_list, top_k=1):
+    def original_retrieve(self, 
+                          qs: str, 
+                          category: str, 
+                          source_list: List[str], 
+                          top_k: int = 1) -> Tuple[List[int], List[float]]:
         """
         Retrieve documents using BM25 algorithm.
         """
-        corpus_dict = self.vector_db.get_text(category)
+        corpus_dict = self._vector_db.get_text(category)
         filtered_corpus = [corpus_dict[int(file)] for file in source_list]
         tokenized_corpus = [list(jieba.cut_for_search(doc)) for doc in filtered_corpus]
         bm25 = BM25Okapi(tokenized_corpus)
@@ -162,11 +180,16 @@ class Retriever:
             return [1.0] * len(scores)
         return [(s - min_score) / (max_score - min_score) for s in scores]
         
-    def bm25_vector_retrieve(self, qs, category, source_list, top_k=1, k=60):
+    def bm25_vector_retrieve(self, 
+                             qs: str, 
+                             category: str, 
+                             source_list: List[str], 
+                             top_k: int = 1, 
+                             k: int = 60) -> Optional[List[int]]:
         """
         Combine BM25 and vector retrieval scores using Reciprocal Rank Fusion (RRF).
         """
-        bm25_retrieved, bm25_scores ,vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
+        bm25_retrieved, bm25_scores, vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
 
         bm25_scores_norm = self.normalize_scores(bm25_scores)
         vector_scores_norm = self.normalize_scores(vector_scores)
@@ -184,35 +207,15 @@ class Retriever:
             return None
 
         return [r[0] for r in sorted_results[:top_k]]
-    
-    def weight_rrf_retrieve(self, qs, category, source_list, top_k=1, k=60, weight=0.8):
-        
-        bm25_retrieved, bm25_scores ,vector_retrieved, vector_scores = self.bm25_vector_retrieve_parallel(qs, category, source_list)
 
-        bm25_scores_norm = self.normalize_scores(bm25_scores)
-        vector_scores_norm = self.normalize_scores(vector_scores)
-
-        combined_scores = {}
-        for idx, (b_score, v_score) in enumerate(zip(bm25_scores_norm, vector_scores_norm)):
-            file_id = int(source_list[idx])
-            # 'rrf'
-            # Calculate RRF scores
-            combined_score = weight * (1 / (k + (1 - v_score))) + (1 - weight) * (1 / (k + (1 - b_score)))
-                
-            combined_scores[file_id] = combined_score
-
-        # Sort and return top_k results
-        sorted_results = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
-        if not sorted_results:
-            return None
-
-        return [r[0] for r in sorted_results[:top_k]]
-
-    def relative_score_fusion(self, qs: str, category: str, source_list: List[str], 
-                            top_k: int = 1, alpha: float = 0.5) -> Optional[List[int]]:
+    def relative_score_fusion(self, 
+                              qs: str, 
+                              category: str, 
+                              source_list: List[str], 
+                              top_k: int = 1, 
+                              alpha: float = 0.5) -> Optional[List[int]]:
         """
-        Relative Score Fusion
-
+        Combine BM25 and vector retrieval scores using Relative Score Fusion (RSF).
         """
         bm25_retrieved, bm25_scores, vector_retrieved, vector_scores = \
             self.bm25_vector_retrieve_parallel(qs, category, source_list)
@@ -221,21 +224,51 @@ class Retriever:
         bm25_norm = self.normalize_scores(bm25_scores)
         vector_norm = self.normalize_scores(vector_scores)
 
-        # relative score fusion
+        # Calculate RSF scores
         rsf_scores = {}
         for idx, (b_score, v_score) in enumerate(zip(bm25_norm, vector_norm)):
             file_id = int(source_list[idx])
             rsf_score = alpha * v_score + (1 - alpha) * b_score
             rsf_scores[file_id] = rsf_score
 
-        # sort and return top_k results
+        # Sort and return top_k results
+        sorted_results = sorted(rsf_scores.items(), key=lambda x: x[1], reverse=True)
+        return [r[0] for r in sorted_results[:top_k]] if sorted_results else None
+    
+    def relative_score_clean_fusion(self, 
+                                    qs: str, 
+                                    category: str, 
+                                    source_list: List[str], 
+                                    top_k: int = 1, 
+                                    alpha: float = 0.8) -> Optional[List[int]]:
+        """
+        Combine BM25 and vector retrieval scores using Relative Score Fusion (RSF) with clean text.
+        """
+        bm25_retrieved, bm25_scores, vector_retrieved, vector_scores = \
+            self.bm25_vector_retrieve_parallel(qs, category, source_list, text_type='clean')
+
+        # Normalize scores
+        bm25_norm = self.normalize_scores(bm25_scores)
+        vector_norm = self.normalize_scores(vector_scores)
+
+        # Calculate RSF scores
+        rsf_scores = {}
+        for idx, (b_score, v_score) in enumerate(zip(bm25_norm, vector_norm)):
+            file_id = int(source_list[idx])
+            rsf_score = alpha * v_score + (1 - alpha) * b_score
+            rsf_scores[file_id] = rsf_score
+
+        # Sort and return top_k results
         sorted_results = sorted(rsf_scores.items(), key=lambda x: x[1], reverse=True)
         return [r[0] for r in sorted_results[:top_k]] if sorted_results else None
 
-    def distribution_score_fusion(self, qs: str, category: str, source_list: List[str], 
-                                top_k: int = 1) -> Optional[List[int]]:
+    def distribution_score_fusion(self, 
+                                  qs: str, 
+                                  category: str, 
+                                  source_list: List[str], 
+                                  top_k: int = 1) -> Optional[List[int]]:
         """
-        Distribution-Based Score Fusion
+        Combine BM25 and vector retrieval scores using Distribution-Based Score Fusion (DBSF).
         """
         bm25_retrieved, bm25_scores, vector_retrieved, vector_scores = \
             self.bm25_vector_retrieve_parallel(qs, category, source_list)
@@ -244,28 +277,34 @@ class Retriever:
         bm25_z = stats.zscore(bm25_scores)
         vector_z = stats.zscore(vector_scores)
 
-        # fusion
+        # Calculate DBSF scores
         dbsf_scores = {}
         for idx, (b_z, v_z) in enumerate(zip(bm25_z, vector_z)):
             file_id = int(source_list[idx])
-            # max of two z-scores
             dbsf_score = max(b_z, v_z)
             dbsf_scores[file_id] = dbsf_score
 
-        # sort and return top_k results
+        # Sort and return top_k results
         sorted_results = sorted(dbsf_scores.items(), key=lambda x: x[1], reverse=True)
         return [r[0] for r in sorted_results[:top_k]] if sorted_results else None
     
-    def bm25_vector_retrieve_parallel(self, qs, category, source_list):
-        """do bm25 and vector retrieval in parallel"""
+    def bm25_vector_retrieve_parallel(self, 
+                                      qs: str, 
+                                      category: str, 
+                                      source_list: List[str], 
+                                      text_type: str = 'chunk') -> Tuple[List[int], List[float], List[int], List[float]]:
+        """
+        Perform BM25 and vector retrieval in parallel.
+        """
         with ThreadPoolExecutor(max_workers=2) as executor:
-            # two futures for bm25 and vector retrieval
+            # Two futures for BM25 and vector retrieval
             future_bm25 = executor.submit(
                 self.bm25_retrieve,
                 qs, 
                 category, 
                 source_list,
-                top_k=len(source_list)
+                top_k=len(source_list),
+                text_type=text_type
             )
             
             future_vector = executor.submit(
@@ -277,7 +316,7 @@ class Retriever:
             )
             
             try:
-                # 等待並獲取結果
+                # Wait and get results
                 bm25_retrieved, bm25_scores = future_bm25.result()
                 vector_retrieved, vector_scores = future_vector.result()
                 
@@ -285,17 +324,20 @@ class Retriever:
                         vector_retrieved, vector_scores)
                         
             except Exception as e:
-                logging.error(f"Error when retrival parallel: {str(e)}")
+                logging.error(f"Error during parallel retrieval: {str(e)}")
                 return [], [], [], []
 
-    def process_questions(self, method='Vector', combine_method='fussion', k=60, weight=0.8, text_type='chunk'):
+    def process_questions(self, 
+                          method: str = 'Vector', 
+                          k: int = 60, 
+                          weight: float = 0.8, 
+                          text_type: str = 'chunk'):
         """
         Process questions and retrieve answers using the specified method.
         """
         answer_dict = {"answers": []}
-        with open(self.question_path, 'rb') as f:
+        with open(self._question_path, 'rb') as f:
             qs_ref = json.load(f)
-
 
         for q_dict in qs_ref['questions']:
             category = q_dict['category']
@@ -310,23 +352,22 @@ class Retriever:
             elif method == 'BM25_Vector_rrf':
                 retrieved = self.bm25_vector_retrieve(query, category, source, k=k)
             elif method == 'BM25':
-                retrieved, score = self.bm25_retrieve(query, category, source, text_type=text_type)    
-            elif method == 'weight_rrf':
-                retrieved = self.weight_rrf_retrieve(query, category, source, k=k, weight=weight)        
+                retrieved, score = self.bm25_retrieve(query, category, source, text_type=text_type)           
             elif method == 'relative_fusion':
                 retrieved = self.relative_score_fusion(query, category, source, alpha=weight)  
             elif method == 'distribution_fusion':
                 retrieved = self.distribution_score_fusion(query, category, source)      
+            elif method == 'final':
+                retrieved = self.relative_score_clean_fusion(query, category, source)    
             else:
                 raise ValueError("Invalid retrieval method")
 
-            answer_dict['answers'].append({"qid": qid, "retrieve": retrieved[0]})
+            answer_dict['answers'].append({"qid": qid, "retrieve": int(retrieved[0])})
 
-        with open(self.output_path, 'w', encoding='utf8') as f:
+        with open(self._output_path, 'w', encoding='utf8') as f:
             json.dump(answer_dict, f, ensure_ascii=False, indent=4)
             
-            
-        print(f"  - Answers saved to {self.output_path} ")
+        print(f"  - Answers saved to {self._output_path} ")
 
 
 if __name__ == "__main__":
